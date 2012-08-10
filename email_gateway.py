@@ -1,5 +1,6 @@
 #!/usr/bin/env python2.6
 
+import logging
 import os
 import smtplib
 import re
@@ -9,6 +10,11 @@ from email.mime.text import MIMEText
 from ConfigParser import SafeConfigParser as ConfigParser, \
         NoSectionError, NoOptionError
 from spambayes.storage import PickledClassifier
+
+log = logging.getLogger("email_gateway")
+handler = logging.FileHandler("/var/log/webapps/email_gateway.log")
+log.addHandler(handler)
+log.setLevel(logging.DEBUG)
 
 
 config = ConfigParser()
@@ -29,14 +35,21 @@ def send_message(text, subject, to, from_email):
 
 
 def looks_like_spam(message, config, section):
+    log.info("Checking message for spam...")
+    log.debug(message)
     pickle_filename = config.get(section, 'spam.pickle_file')
-    min_spam_prob = config.getfloat(section, 'spam.min_spam_prob')
+    min_spam_prob = config.getfloat(section, 'spam.min_spam_prob') or 0.90
 
+    log.debug("Loading pickle from %s", pickle_filename)
     bayes = PickledClassifier(pickle_filename)
 
-    if bayes.chi2_spamprob(message) >= min_spam_prob:
+    spamprob = bayes.chi2_spamprob(message)
+
+    if spamprob >= min_spam_prob:
+        log.debug("spamprob %s >= %s, probably spam", spamprob, min_spam_prob)
         return True
 
+    log.debug("spamprob %s <= %s, probably not spam", spamprob, min_spam_prob)
     return False
 
 
@@ -47,6 +60,7 @@ def email_app(environ, start_response):
     message_buffer = StringIO()
 
     context = {}
+    to_check = []
 
     fields = urlparse.parse_qsl(environ["wsgi.input"].read())
     for key, value in fields:
@@ -61,6 +75,7 @@ def email_app(environ, start_response):
         elif key == "mailer.fields.ignore":
             ignored_fields = value.split(",")
         else:
+            to_check.append(value)
             useful_fields.append((key, value))
 
     try:
@@ -76,7 +91,7 @@ def email_app(environ, start_response):
 
     try:
         if config.getboolean(form_key, 'spam.check') \
-                and looks_like_spam(context["message"], config, form_key):
+                and looks_like_spam(" ".join(to_check), config, form_key):
             start_response('403 Forbidden', [('Content-Type', 'text/plain')])
             return "I don't like SPAM!"
     except NoOptionError:
