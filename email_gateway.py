@@ -6,7 +6,9 @@ import re
 import urlparse
 from cStringIO import StringIO
 from email.mime.text import MIMEText
-from ConfigParser import SafeConfigParser as ConfigParser, NoSectionError
+from ConfigParser import SafeConfigParser as ConfigParser, \
+        NoSectionError, NoOptionError
+from spambayes.storage import PickledClassifier
 
 
 config = ConfigParser()
@@ -24,6 +26,18 @@ def send_message(text, subject, to, from_email):
     p = os.popen("/usr/sbin/sendmail -t", "w")
     p.write(msg.as_string())
     p.close()
+
+
+def looks_like_spam(message, config, section):
+    pickle_filename = config.get(section, 'spam.pickle_file')
+    min_spam_prob = config.getfloat(section, 'spam.min_spam_prob')
+
+    bayes = PickledClassifier(pickle_filename)
+
+    if bayes.chi2_spamprob(message) >= min_spam_prob:
+        return True
+
+    return False
 
 
 def email_app(environ, start_response):
@@ -59,6 +73,14 @@ def email_app(environ, start_response):
     if not site_matcher.match(environ["HTTP_REFERER"]):
         start_response('403 Forbidden', [('Content-Type', 'text/plain')])
         return "Invalid send!"
+
+    try:
+        if config.getboolean(form_key, 'spam.check') \
+                and looks_like_spam(context["message"], config, form_key):
+            start_response('403 Forbidden', [('Content-Type', 'text/plain')])
+            return "I don't like SPAM!"
+    except NoOptionError:
+        pass
 
     useful_fields = ["{0}: {1}".format(*f)
                      for f in useful_fields
